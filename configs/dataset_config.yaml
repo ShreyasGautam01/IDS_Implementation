@@ -1,0 +1,8 @@
+paths:
+  unsw_v2: "D:/Datasets/NF-UNSW-NB15-V2.parquet"
+  cic18_v2: "D:/Datasets/NF-CSE-CIC-IDS2018-V2.parquet"
+parameters:
+  random_seeds: [42, 43, 44, 45]
+  cic18_sample_size: 200000
+  alpha: 0.10
+  tau_hi: 0.25

@@ -1,0 +1,5 @@
+OSR_Method,OpenAUROC,OpenAUPR
+Closed_MaxProb_Baseline,0.9233,0.0576
+Euclidean_OpenMax_GBDT,0.8558,0.0267
+Mahalanobis_EVT_GBDT,0.846,0.0294
+Hybrid_Mahalanobis_Conformal_OSR,0.9044,0.0429

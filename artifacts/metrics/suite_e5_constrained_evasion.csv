@@ -1,0 +1,6 @@
+Epsilon,Unconstrained_Attack_Recall,Monotone_Attack_Recall,Unconstrained_MacroF1,Monotone_MacroF1
+0.0,99.96,100.0,0.9939,0.9943
+0.25,99.87,100.0,0.9934,0.9943
+0.5,99.73,100.0,0.9929,0.9943
+0.75,98.88,100.0,0.9891,0.9943
+1.0,0.59,100.0,0.3677,0.9943

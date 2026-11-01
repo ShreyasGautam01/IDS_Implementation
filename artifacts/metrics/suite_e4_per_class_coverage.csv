@@ -1,0 +1,10 @@
+Category,Marginal_SCP_Cov,Mondrian_MCP_Cov
+Benign,98.53,89.95
+Analysis,41.38,90.52
+Backdoor,76.0,88.8
+DoS,60.38,88.02
+Exploits,74.43,90.37
+Fuzzers,83.14,90.77
+Generic,76.86,89.99
+Reconnaissance,88.66,88.78
+Shellcode,92.56,93.49

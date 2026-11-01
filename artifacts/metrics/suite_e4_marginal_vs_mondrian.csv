@@ -1,0 +1,5 @@
+Method,Alpha,Target_Cov,Overall_Cov,Worst_Class_Cov,Mean_Class_Cov,Mean_Set_Size,Empty_Sets
+Marginal_SCP,0.1,90.0,89.9,41.38,76.88,0.989,606
+Mondrian_MCP,0.1,90.0,90.03,88.02,90.08,1.251,1247
+Marginal_SCP,0.05,95.0,94.96,52.59,86.01,1.165,0
+Mondrian_MCP,0.05,95.0,94.87,93.88,95.13,1.53,440

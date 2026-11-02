@@ -1,21 +1,27 @@
-# src/conformal_mondrian.py
+﻿# src/conformal_mondrian.py
 from typing import Dict, List, Tuple
 import numpy as np
 from scipy.stats import ks_2samp
 
 
 class MondrianConformalCalibrator:
-    """Class-Conditional (Mondrian) Conformal Prediction with Kolmogorov-Smirnov
-
-    Clustered Conformal Prediction (CCP) fallback for rare tail attack classes.
+    """Inductive Class-Conditional (Mondrian) Conformal Predictor with explicit
+    tracking of calibration stratum sizes and KS fallback activations.
     """
 
-    def __init__(self, alpha: float = 0.10, random_state: int = 42):
+    def __init__(
+        self,
+        alpha: float = 0.10,
+        allow_ks_fallback: bool = True,
+        random_state: int = 42,
+    ):
         self.alpha = alpha
+        self.allow_ks_fallback = allow_ks_fallback
         self.min_stratum_size = int(np.ceil((1.0 - alpha) / alpha))
         self.rng = np.random.default_rng(random_state)
         self.cal_scores_by_class_: Dict[int, np.ndarray] = {}
-        self.q_hat_by_class_: Dict[int, float] = {}
+        self.stratum_counts_: Dict[int, int] = {}
+        self.ks_fallback_activated_classes_: List[int] = []
         self.classes_: np.ndarray = np.array([])
 
     def fit(
@@ -23,67 +29,62 @@ class MondrianConformalCalibrator:
     ) -> "MondrianConformalCalibrator":
         self.classes_ = np.arange(probs_cal.shape[1])
         raw_strata: Dict[int, np.ndarray] = {}
+        self.ks_fallback_activated_classes_ = []
 
         for c in self.classes_:
             mask_c = y_cal == c
+            self.stratum_counts_[int(c)] = int(np.sum(mask_c))
             if np.any(mask_c):
                 raw_strata[c] = 1.0 - probs_cal[mask_c, c]
             else:
-                raw_strata[c] = np.array([1.0])
+                raw_strata[c] = np.array([], dtype=np.float64)
 
-        # Apply Clustered Conformal Prediction (CCP) fallback for strata with n_c < min_stratum_size
         well_sampled = [
             c
             for c, s in raw_strata.items()
             if len(s) >= self.min_stratum_size
         ]
+
         for c in self.classes_:
             scores_c = raw_strata[c]
-            if len(scores_c) < self.min_stratum_size and len(well_sampled) > 0:
-                # Find closest well-sampled class stratum via two-sample Kolmogorov-Smirnov distance
-                best_match = min(
-                    well_sampled,
-                    key=lambda ref_c: ks_2samp(
-                        scores_c, raw_strata[ref_c]
-                    ).statistic
-                    if len(scores_c) > 1
-                    else 1.0,
-                )
-                pooled_scores = np.concatenate(
-                    [scores_c, raw_strata[best_match]]
-                )
+            if (
+                self.allow_ks_fallback
+                and len(scores_c) < self.min_stratum_size
+                and len(well_sampled) > 0
+            ):
+                self.ks_fallback_activated_classes_.append(int(c))
+                if len(scores_c) >= 2:
+                    best_match = min(
+                        well_sampled,
+                        key=lambda ref_c: ks_2samp(
+                            scores_c, raw_strata[ref_c]
+                        ).statistic,
+                    )
+                else:
+                    attack_well = [w for w in well_sampled if w > 0] or well_sampled
+                    best_match = max(
+                        attack_well, key=lambda ref_c: len(raw_strata[ref_c])
+                    )
+                pooled_scores = np.concatenate([scores_c, raw_strata[best_match]])
                 self.cal_scores_by_class_[c] = np.sort(pooled_scores)
+            elif len(scores_c) == 0:
+                self.cal_scores_by_class_[c] = np.array([1.0], dtype=np.float64)
             else:
                 self.cal_scores_by_class_[c] = np.sort(scores_c)
-
-            n_c = len(self.cal_scores_by_class_[c])
-            q_level = min(
-                1.0, np.ceil((n_c + 1) * (1.0 - self.alpha)) / n_c
-            )
-            self.q_hat_by_class_[c] = float(
-                np.quantile(
-                    self.cal_scores_by_class_[c], q_level, method="higher"
-                )
-            )
 
         return self
 
     def compute_mondrian_p_values(self, probs_test: np.ndarray) -> np.ndarray:
-        """Computes smoothed class-conditional p-values p_{y_tilde}(x) in O(N log N) time
-
-        and O(N) memory using binary search on sorted calibration strata.
-        """
         n_test, n_classes = probs_test.shape
         p_values = np.zeros((n_test, n_classes), dtype=np.float64)
         theta = self.rng.uniform(0.0, 1.0, size=n_test)
         tol = 1e-7
 
         for c in self.classes_:
-            cal_s = self.cal_scores_by_class_[c]  # Already sorted in fit()
+            cal_s = self.cal_scores_by_class_[c]
             n_c = len(cal_s)
             test_s = 1.0 - probs_test[:, c]
 
-            # Binary search for elements strictly greater and within tie tolerance
             idx_left = np.searchsorted(cal_s, test_s - tol, side="left")
             idx_right = np.searchsorted(cal_s, test_s + tol, side="right")
 
@@ -99,14 +100,6 @@ class MondrianConformalCalibrator:
     def predict_sets_and_margins(
         self, probs_test: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns:
-
-        - pred_set_mask: Boolean matrix (N, K) indicating membership in
-        prediction set Gamma^alpha(x)
-        - evidence_margin: Pairwise conformal evidence margin delta^em(x) =
-        p_(1)(x) - p_(2)(x)
-        - p_values: Full Mondrian p-value matrix
-        """
         p_values = self.compute_mondrian_p_values(probs_test)
         pred_set_mask = p_values > self.alpha
 

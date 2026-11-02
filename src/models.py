@@ -1,13 +1,13 @@
-# src/models.py
+﻿# src/models.py
 from typing import List, Tuple
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.neural_network import MLPClassifier
 
 
 class HybridNIDSBackbone:
-    """Combines Monotone Gradient-Boosted Trees (for calibrated closed-set probabilities)
-    with a Penultimate Feature Encoder (for Mahalanobis EVT Open-Set Recognition).
+    """Couples a Binary Monotone GBDT (enforcing positive volumetric monotonicity)
+    with a Multiclass GBDT so volumetric monotonicity holds across both binary
+    and multi-class intrusion detection, and extracts joint feature-margin embeddings.
     """
 
     def __init__(
@@ -22,8 +22,8 @@ class HybridNIDSBackbone:
     ):
         self.feature_names = feature_names
         self.random_state = random_state
+        self.is_multiclass_: bool = False
 
-        # Enforce positive monotonicity on volumetric features for binary classification
         self.monotonic_cst = [
             1
             if any(k in col.upper() for k in volumetric_keywords)
@@ -31,7 +31,7 @@ class HybridNIDSBackbone:
             for col in feature_names
         ]
 
-        self.tree_backbone = HistGradientBoostingClassifier(
+        self.binary_monotone_gbdt = HistGradientBoostingClassifier(
             max_iter=200,
             learning_rate=0.08,
             max_leaf_nodes=63,
@@ -41,42 +41,53 @@ class HybridNIDSBackbone:
             random_state=random_state,
         )
 
-        # Neural encoder for penultimate latent space representations v(x)
-        self.latent_encoder = MLPClassifier(
-            hidden_layer_sizes=(128, 64),
-            activation="relu",
-            max_iter=100,
+        self.tree_backbone = HistGradientBoostingClassifier(
+            max_iter=200,
+            learning_rate=0.08,
+            max_leaf_nodes=63,
+            monotonic_cst=None,
+            class_weight="balanced",
             early_stopping=True,
             random_state=random_state,
         )
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> "HybridNIDSBackbone":
-        # scikit-learn supports monotonic_cst on binary targets; disable for multi-class
-        if len(np.unique(y_train)) > 2:
-            self.tree_backbone.set_params(monotonic_cst=None)
+        unique_classes = np.unique(y_train)
+        self.is_multiclass_ = len(unique_classes) > 2
+
+        if self.is_multiclass_:
+            y_bin = (y_train > 0).astype(np.int64)
+            self.binary_monotone_gbdt.fit(X_train, y_bin)
+            self.tree_backbone.fit(X_train, y_train)
         else:
             self.tree_backbone.set_params(monotonic_cst=self.monotonic_cst)
-
-        self.tree_backbone.fit(X_train, y_train)
-        self.latent_encoder.fit(X_train, y_train)
+            self.tree_backbone.fit(X_train, y_train)
         return self
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        """Returns closed-set probability distribution over known classes {0..K-1}."""
-        return self.tree_backbone.predict_proba(X)
+        """Returns monotone-coupled probability distribution over {0..K-1}."""
+        if not self.is_multiclass_:
+            return self.tree_backbone.predict_proba(X)
+
+        p_multi = self.tree_backbone.predict_proba(X)
+        p_atk_mono = self.binary_monotone_gbdt.predict_proba(X)[:, 1:2]
+        p_benign_mono = 1.0 - p_atk_mono
+
+        atk_mass = np.sum(p_multi[:, 1:], axis=1, keepdims=True)
+        n_atk_classes = p_multi.shape[1] - 1
+        atk_cond = np.where(
+            atk_mass > 1e-12, p_multi[:, 1:] / atk_mass, 1.0 / n_atk_classes
+        )
+        return np.hstack([p_benign_mono, p_atk_mono * atk_cond])
 
     def extract_penultimate_embeddings(
         self, X: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Forward pass through MLP layers to extract penultimate 64-D activation vector v(x) and raw logits."""
-        a1 = np.maximum(
-            0, X @ self.latent_encoder.coefs_[0] + self.latent_encoder.intercepts_[0]
-        )
-        v_x = np.maximum(
-            0,
-            a1 @ self.latent_encoder.coefs_[1] + self.latent_encoder.intercepts_[1],
-        )
-        logits = (
-            v_x @ self.latent_encoder.coefs_[2] + self.latent_encoder.intercepts_[2]
-        )
-        return v_x, logits
+        """Concatenates standardized flow features X with raw GBDT decision margins g(X)
+        for covariance/PCA modeling, and returns raw margins as the second element.
+        """
+        raw_margins = self.tree_backbone.decision_function(X)
+        if raw_margins.ndim == 1:
+            raw_margins = np.column_stack([-raw_margins, raw_margins])
+        V = np.hstack([X, raw_margins])
+        return V, raw_margins
